@@ -26,107 +26,136 @@ def connect_to_sheets():
 
 sheet = connect_to_sheets()
 
-# --- Helper Function to Save Data ---
+# --- Helper Functions ---
 def add_row_to_sheet(worksheet_name, row_data):
     try:
         ws = sheet.worksheet(worksheet_name)
         ws.append_row(row_data)
-        st.success(f"✅ Data saved to {worksheet_name}!")
-    except Exception as e:
-        st.error(f"❌ Error: Tab '{worksheet_name}' not found. Please create it in your Google Sheet.")
+        st.success(f"✅ Saved to {worksheet_name}!")
+    except:
+        st.error(f"❌ Tab '{worksheet_name}' not found!")
 
-# --- 1. GET ACTIVE BATCH ID AUTOMATICALLY ---
+def get_total_from_col(worksheet_name, col_name='Cost'):
+    try:
+        df = pd.DataFrame(sheet.worksheet(worksheet_name).get_all_records())
+        return df[col_name].sum() if not df.empty else 0
+    except:
+        return 0
+
+# --- Get Active Batch ---
 active_batch_id = "No Active Batch"
 batch_data = []
 try:
     batch_ws = sheet.worksheet("Batch_Setup")
     batch_data = batch_ws.get_all_records()
     if batch_data:
-        # Get the ID from the very last row recorded
         active_batch_id = batch_data[-1].get("Batch_Id", "No Active Batch")
 except:
     pass
 
-# --- Navigation ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "☠️ Mortality", "💰 Sales", "🌾 Feed", "💸 Expenses"])
+# --- Navigation (Reordered Tabs) ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "☠️ Mortality", "🌾 Feed", "💰 Sales", "💸 Expenses & Medicine"])
 
+# --- TAB 1: DASHBOARD ---
 with tab1:
-    st.header("Batch Setup & Status")
+    st.header(f"Active Batch: {active_batch_id}")
     
-    with st.expander("➕ Start New Batch", expanded=False):
-        with st.form("batch_setup_form", clear_on_submit=True):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                b_id = st.text_input("Batch ID (e.g., B-01)")
+    col_setup, col_delete = st.columns([2, 1])
+    with col_setup:
+        with st.expander("➕ Start New Batch"):
+            with st.form("batch_setup_form", clear_on_submit=True):
+                b_id = st.text_input("Batch ID")
                 b_date = st.date_input("Arrival Date")
-                b_count = st.number_input("Chick Count", min_value=1, step=1)
-            with col_b:
-                b_cost = st.number_input("Chick Cost (₹)", min_value=0.0)
-                f_qty = st.number_input("Initial Feed Qty (Bags)", min_value=0.0)
-                f_price = st.number_input("Initial Feed Price (₹/Bag)", min_value=0.0)
-            
-            if st.form_submit_button("Record Batch Details"):
-                new_row = [b_id, b_date.strftime("%d/%m/%Y"), b_count, b_cost, f_qty, f_price]
-                add_row_to_sheet("Batch_Setup", new_row)
-                st.rerun() # Refresh app to update the batch ID everywhere
+                b_count = st.number_input("Chick Count", min_value=1)
+                b_cost = st.number_input("Chick Cost (₹)")
+                f_qty = st.number_input("Initial Feed (Bags)")
+                f_price = st.number_input("Feed Price (₹/Bag)")
+                if st.form_submit_button("Initialize"):
+                    add_row_to_sheet("Batch_Setup", [b_id, b_date.strftime("%d/%m/%Y"), b_count, b_cost, f_qty, f_price])
+                    st.rerun()
+
+    with col_delete:
+        if active_batch_id != "No Active Batch":
+            if st.button(f"🗑️ Delete Batch {active_batch_id}"):
+                ws = sheet.worksheet("Batch_Setup")
+                rows = ws.get_all_values()
+                for i, row in enumerate(rows):
+                    if row[0] == active_batch_id:
+                        ws.delete_rows(i + 1)
+                        st.rerun()
     
     st.divider()
-
+    
     if active_batch_id != "No Active Batch":
-        try:
-            latest = batch_data[-1]
-            arr_date = datetime.strptime(str(latest.get("Arrival_Date")), "%d/%m/%Y").date()
-            age = (datetime.now().date() - arr_date).days
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Active Batch", active_batch_id)
-            m2.metric("Age (Days)", age)
-            total_cost = (float(latest.get("Chick_Count", 0)) * float(latest.get("Chick_Cost", 0))) + \
-                         (float(latest.get("Init_Feed_Qty", 0)) * float(latest.get("Init_Feed_Price", 0)))
-            m3.metric("Initial Investment", f"₹{total_cost:,.2f}")
-        except:
-            st.info("Batch found, but check your column headers in Google Sheets.")
-    else:
-        st.info("No active batch found. Use the form above to start your first batch!")
+        t_med = get_total_from_col("Medicine_Log")
+        t_a = get_total_from_col("Expenses_A")
+        t_b = get_total_from_col("Expenses_B")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Medicine Total", f"₹{t_med:,.2f}")
+        m2.metric("Person A Expenses", f"₹{t_a:,.2f}")
+        m3.metric("Person B Expenses", f"₹{t_b:,.2f}")
 
+# --- TAB 2: MORTALITY ---
 with tab2:
-    st.header("Log Deaths")
-    with st.form("mortality_form", clear_on_submit=True):
+    st.header("Log Mortality")
+    with st.form("mort_form", clear_on_submit=True):
         m_date = st.date_input("Date")
-        # AUTO-FILLED BATCH ID
         m_batch = st.text_input("Batch ID", value=active_batch_id)
-        m_deaths = st.number_input("Number of Deaths", min_value=1, step=1)
+        m_qty = st.number_input("Deaths", min_value=1)
         if st.form_submit_button("Save Mortality"):
-            add_row_to_sheet("Mortality_Log", [m_date.strftime("%d/%m/%Y"), m_batch, m_deaths])
+            add_row_to_sheet("Mortality_Log", [m_date.strftime("%d/%m/%Y"), m_batch, m_qty])
 
-with tab3:
-    st.header("Log Sales")
-    with st.form("sales_form", clear_on_submit=True):
-        s_date = st.date_input("Date")
-        # AUTO-FILLED BATCH ID
-        s_batch = st.text_input("Batch ID", value=active_batch_id)
-        s_birds = st.number_input("Birds Sold", min_value=1, step=1)
-        s_weight = st.number_input("Total Weight (kg)", min_value=0.0)
-        s_price = st.number_input("Total Sale Price (₹)", min_value=0.0)
-        if st.form_submit_button("Save Sale"):
-            add_row_to_sheet("Sales_Log", [s_date.strftime("%d/%m/%Y"), s_batch, s_birds, s_weight, s_price])
-
+# --- TAB 3: FEED (Now Before Sales) ---
 with tab4:
     st.header("Log Feed")
     with st.form("feed_form", clear_on_submit=True):
         f_date = st.date_input("Date")
         f_batch = st.text_input("Batch ID", value=active_batch_id)
-        f_type = st.selectbox("Action", ["Purchased", "Returned"])
-        f_bags = st.number_input("Number of Bags", min_value=1, step=1)
-        if st.form_submit_button("Save Feed Log"):
-            add_row_to_sheet("Feed_Log", [f_date.strftime("%d/%m/%Y"), f_batch, f_type, f_bags])
+        f_bags = st.number_input("Bags Purchased", min_value=1)
+        if st.form_submit_button("Save Feed"):
+            add_row_to_sheet("Feed_Log", [f_date.strftime("%d/%m/%Y"), f_batch, f_bags])
 
+# --- TAB 4: SALES (Now After Feed) ---
+with tab3:
+    st.header("Log Sales")
+    with st.form("sales_form", clear_on_submit=True):
+        s_date = st.date_input("Date")
+        s_batch = st.text_input("Batch ID", value=active_batch_id)
+        s_birds = st.number_input("Birds Sold", min_value=1)
+        s_weight = st.number_input("Total Weight (kg)")
+        s_price = st.number_input("Total Sale Price (₹)")
+        if st.form_submit_button("Save Sale"):
+            add_row_to_sheet("Sales_Log", [s_date.strftime("%d/%m/%Y"), s_batch, s_birds, s_weight, s_price])
+
+# --- TAB 5: MEDICINE & EXPENSES ---
 with tab5:
-    st.header("Log Expenses")
-    with st.form("expense_form", clear_on_submit=True):
-        e_date = st.date_input("Date")
-        e_batch = st.text_input("Batch ID", value=active_batch_id)
-        e_amount = st.number_input("Amount (₹)", min_value=0.0)
-        e_desc = st.text_input("Expense Details")
-        if st.form_submit_button("Save Expense"):
-            add_row_to_sheet("Expense_Log", [e_date.strftime("%d/%m/%Y"), e_batch, e_amount, e_desc])
+    st.header("Additional Costs")
+    col_med, col_a, col_b = st.columns(3)
+    
+    with col_med:
+        st.subheader("💊 Medicine")
+        with st.form("med_form", clear_on_submit=True):
+            med_date = st.date_input("Date")
+            med_item = st.text_input("Item")
+            med_cost = st.number_input("Cost (₹)", key="med_c")
+            if st.form_submit_button("Log Medicine"):
+                add_row_to_sheet("Medicine_Log", [med_date.strftime("%d/%m/%Y"), active_batch_id, med_item, med_cost])
+
+    with col_a:
+        st.subheader("👤 Person A")
+        with st.form("a_form", clear_on_submit=True):
+            a_date = st.date_input("Date")
+            a_item = st.text_input("Item")
+            a_cost = st.number_input("Cost (₹)", key="a_c")
+            if st.form_submit_button("Log Person A"):
+                add_row_to_sheet("Expenses_A", [a_date.strftime("%d/%m/%Y"), active_batch_id, a_item, a_cost])
+
+    with col_b:
+        st.subheader("👤 Person B")
+        with st.form("b_form", clear_on_submit=True):
+            b_date = st.date_input("Date")
+            b_item = st.text_input("Item")
+            b_cost = st.number_input("Cost (₹)", key="b_c")
+            if st.form_submit_button("Log Person B"):
+                add_row_to_sheet("Expenses_B", [b_date.strftime("%d/%m/%Y"), active_batch_id, b_item, b_cost])
