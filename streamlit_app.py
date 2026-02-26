@@ -13,18 +13,19 @@ try:
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # IMPORTANT: Change this to the exact name of your Google Sheet
+    # Spreadsheet name updated as requested
     SHEET_NAME = "Poultry_Data_Vault" 
     spreadsheet = client.open(SHEET_NAME)
 except Exception as e:
     st.error(f"Authentication Error: {e}")
-    st.info("Check your Streamlit Secrets and Google Sheet name.")
+    st.info("Check your Streamlit Secrets and ensure your Google Sheet is named: Poultry_Data_Vault")
     st.stop()
 
 # --- 2. HELPER FUNCTIONS ---
 def get_df(sheet_name):
     sheet = spreadsheet.worksheet(sheet_name)
-    return pd.DataFrame(sheet.get_all_records())
+    data = sheet.get_all_records()
+    return pd.DataFrame(data)
 
 def append_row(sheet_name, row_list):
     spreadsheet.worksheet(sheet_name).append_row(row_list)
@@ -111,6 +112,15 @@ if nav == "Dashboard":
                 sheet.update_cell(cell.row, 6, "Finalized")
                 st.rerun()
 
+    # DELETE OPTION (For mistakes)
+    if status != "New" and status != "Finalized":
+        if st.button("🗑️ Delete Current Batch (CAUTION)"):
+            sheet = spreadsheet.worksheet("Dashboard")
+            cell = sheet.find(active_id)
+            sheet.delete_rows(cell.row)
+            st.warning(f"Batch {active_id} deleted from Dashboard. Note: Log rows must be cleared manually in Sheets.")
+            st.rerun()
+
 # --- 5. LOGGING TABS (FEED, MORTALITY, EXPENSES) ---
 elif nav in ["Feed Log", "Mortality", "Expenses"]:
     st.title(f"📝 {nav}")
@@ -141,7 +151,7 @@ elif nav in ["Feed Log", "Mortality", "Expenses"]:
                             append_row("Mortality_Log", [str(date.today()), m_count, active_id])
                 st.dataframe(get_df("Mortality_Log").query(f"Batch_ID == '{active_id}'"))
 
-        # Expenses Logic (Always open for Pre-Arrival and Active)
+        # Expenses Logic (Open for Pre-Arrival and Active)
         elif nav == "Expenses":
             if status != "Finalized":
                 with st.form("exp_form", clear_on_submit=True):
