@@ -4,39 +4,45 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import date
 
-# --- 1. AUTHENTICATION (Using Streamlit Secrets) ---
-# Make sure you have your secrets set up in the Streamlit Cloud Dashboard
+# --- 1. AUTHENTICATION (Using Your Specific Secret Key) ---
 try:
-    creds_dict = st.secrets["gcp_service_account"]
+    # This matches the [GSP_SERVICE_ACCOUNT] header in your Streamlit Secrets
+    creds_dict = st.secrets["GSP_SERVICE_ACCOUNT"]
+    
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # CHANGE THIS to your exact Google Sheet name
-    SHEET_NAME = "Your_Poultry_Sheet_Name" 
+    # IMPORTANT: Change this to the exact name of your Google Sheet
+    SHEET_NAME = "Poultry_Data_Vault" 
     spreadsheet = client.open(SHEET_NAME)
 except Exception as e:
-    st.error(f"Connection Error: {e}")
+    st.error(f"Authentication Error: {e}")
+    st.info("Check your Streamlit Secrets and Google Sheet name.")
     st.stop()
 
-# Helper Functions
+# --- 2. HELPER FUNCTIONS ---
 def get_df(sheet_name):
     sheet = spreadsheet.worksheet(sheet_name)
-    data = sheet.get_all_records()
-    return pd.DataFrame(data)
+    return pd.DataFrame(sheet.get_all_records())
 
 def append_row(sheet_name, row_list):
     spreadsheet.worksheet(sheet_name).append_row(row_list)
 
-# --- 2. NAVIGATION & BATCH SELECTION ---
+# --- 3. NAVIGATION & BATCH SELECTION ---
 st.sidebar.title("🐓 Poultry Manager")
-nav = st.sidebar.radio("Menu", ["Dashboard", "Feed Log", "Mortality", "Sales", "Expenses"])
+nav = st.sidebar.radio("Go to:", ["Dashboard", "Feed Log", "Mortality", "Sales", "Expenses"])
 
+# Fetch Batch List from Dashboard Tab
 dash_df = get_df("Dashboard")
-batch_list = ["+ Create New Batch"] + dash_df['Batch_ID'].tolist() if not dash_df.empty else ["+ Create New Batch"]
-selected_batch = st.sidebar.selectbox("Select Batch", batch_list)
+if not dash_df.empty:
+    batch_list = ["+ Create New Batch"] + dash_df['Batch_ID'].tolist()
+else:
+    batch_list = ["+ Create New Batch"]
 
-# Global State for Batch ID
+selected_batch = st.sidebar.selectbox("Select Batch:", batch_list)
+
+# Set Session State for the Active Batch
 if selected_batch == "+ Create New Batch":
     active_id = None
     status = "New"
@@ -45,26 +51,28 @@ else:
     status = dash_df[dash_df['Batch_ID'] == active_id]['Status'].values[0]
 
 st.sidebar.divider()
-st.sidebar.info(f"Current Batch: **{active_id}**\n\nStatus: **{status}**")
+st.sidebar.write(f"**Current Batch:** `{active_id}`")
+st.sidebar.write(f"**Status:** `{status}`")
 
-# --- 3. DASHBOARD (Setup & Finalization) ---
+# --- 4. DASHBOARD TAB ---
 if nav == "Dashboard":
     st.title("📊 Batch Dashboard")
     
     if status == "New":
-        with st.form("new_batch"):
-            new_id = st.text_input("New Batch ID")
+        with st.form("create_batch_form"):
+            new_id = st.text_input("Enter New Batch ID (e.g., B-01)")
             if st.form_submit_button("Create Pre-Arrival Batch"):
                 append_row("Dashboard", [new_id, "", 0, 0, 0, "Pre-Arrival"])
+                st.success("Batch created! Expenses are now unlocked.")
                 st.rerun()
                 
     elif status == "Pre-Arrival":
-        st.warning("Status: Pre-Arrival (Only Expenses Unlocked)")
+        st.info("Chicks have not arrived yet. Only the Expenses tab is active.")
         with st.form("activate_batch"):
-            arr_date = st.date_input("Arrival Date")
-            count = st.number_input("Chick Count", min_value=1)
+            arr_date = st.date_input("Actual Arrival Date")
+            count = st.number_input("Total Chick Count", min_value=1)
             price = st.number_input("Price per Chick", min_value=0.0)
-            if st.form_submit_button("Confirm Chick Arrival"):
+            if st.form_submit_button("Record Arrival & Unlock All Tabs"):
                 sheet = spreadsheet.worksheet("Dashboard")
                 cell = sheet.find(active_id)
                 sheet.update_cell(cell.row, 2, str(arr_date))
@@ -75,96 +83,99 @@ if nav == "Dashboard":
                 st.rerun()
 
     elif status == "Active":
-        st.success("Batch is Active. Logging fully enabled.")
-        if st.button("🏁 FINISH & VIEW SUMMARY"):
-            # Math Logic
-            feed = get_df("Feed_Log")
-            feed = feed[feed['Batch_ID'] == active_id]
-            sales = get_df("Sales_Log")
-            sales = sales[sales['Batch_ID'] == active_id]
-            mort = get_df("Mortality_Log")
-            mort = mort[mort['Batch_ID'] == active_id]
-            exp = get_df("Expenses_Log")
-            exp = exp[exp['Batch_ID'] == active_id]
+        st.success("Batch is Active. All features are enabled.")
+        if st.button("🏁 SHOW FINAL AUDIT & FINISH"):
+            feed = get_df("Feed_Log").query(f"Batch_ID == '{active_id}'")
+            sales = get_df("Sales_Log").query(f"Batch_ID == '{active_id}'")
+            mort = get_df("Mortality_Log").query(f"Batch_ID == '{active_id}'")
+            exp = get_df("Expenses_Log").query(f"Batch_ID == '{active_id}'")
             
             st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Bags", feed['Bags'].sum())
-            c2.metric("Total Mortality", mort['Mortality_Count'].sum())
-            c3.metric("Remaining/Rejects", int(dash_df[dash_df['Batch_ID']==active_id]['Chick_Count'].values[0] - mort['Mortality_Count'].sum() - sales['Bird_Count'].sum()))
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Feed Bags", feed['Bags'].sum())
+                st.metric("Total Mortality", mort['Mortality_Count'].sum())
+            with col2:
+                total_rev = sales['Total_Revenue'].sum()
+                total_feed_cost = feed['Daily_Total'].sum()
+                st.metric("Net Total (Revenue - Feed)", f"₹{total_rev - total_feed_cost}")
             
-            rev = sales['Total_Revenue'].sum()
-            f_cost = feed['Daily_Total'].sum()
-            st.metric("NET TOTAL (Revenue - Feed Only)", f"₹{rev - f_cost}")
+            st.subheader("Other Expenses")
+            st.write(f"Medicine: ₹{exp[exp['Category']=='Medicine']['Price'].sum()}")
+            st.write(f"Person A: ₹{exp[exp['Category']=='Person A']['Price'].sum()}")
+            st.write(f"Person B: ₹{exp[exp['Category']=='Person B']['Price'].sum()}")
             
-            st.subheader("Other Expenses (Separate)")
-            st.write(f"Medicine Total: ₹{exp[exp['Category']=='Medicine']['Price'].sum()}")
-            st.write(f"Person A Total: ₹{exp[exp['Category']=='Person A']['Price'].sum()}")
-            st.write(f"Person B Total: ₹{exp[exp['Category']=='Person B']['Price'].sum()}")
-            
-            if st.button("🔴 FINALISE (NO MORE EDITS)"):
+            if st.button("🔴 LOCK & FINALIZE BATCH"):
                 sheet = spreadsheet.worksheet("Dashboard")
                 cell = sheet.find(active_id)
                 sheet.update_cell(cell.row, 6, "Finalized")
                 st.rerun()
 
-# --- 4. LOGGING TABS (FEED, MORTALITY, EXPENSES) ---
+# --- 5. LOGGING TABS (FEED, MORTALITY, EXPENSES) ---
 elif nav in ["Feed Log", "Mortality", "Expenses"]:
     st.title(f"📝 {nav}")
-    if status == "Finalized": st.error("READ ONLY MODE - Batch Finalized")
-    
-    if nav == "Feed Log":
-        if status == "Pre-Arrival": st.warning("Locked until chicks arrive.")
-        else:
-            if status == "Active":
-                with st.form("feed_form", clear_on_submit=True):
-                    f_type = st.text_input("Feed Type")
-                    bags = st.number_input("Bags", min_value=1)
-                    p_bag = st.number_input("Price per Bag")
-                    if st.form_submit_button("Save"):
-                        append_row("Feed_Log", [str(date.today()), f_type, bags, p_bag, bags*p_bag, active_id])
-            st.dataframe(get_df("Feed_Log").query(f"Batch_ID == '{active_id}'"))
+    if not active_id:
+        st.warning("Please select or create a batch first.")
+    else:
+        # Feed Logic
+        if nav == "Feed Log":
+            if status == "Pre-Arrival": st.warning("Locked. Please confirm chick arrival on Dashboard.")
+            else:
+                if status == "Active":
+                    with st.form("feed_form", clear_on_submit=True):
+                        f_type = st.text_input("Feed Type")
+                        bags = st.number_input("Number of Bags", min_value=1)
+                        p_bag = st.number_input("Price per Bag")
+                        if st.form_submit_button("Save Feed Entry"):
+                            append_row("Feed_Log", [str(date.today()), f_type, bags, p_bag, bags*p_bag, active_id])
+                st.dataframe(get_df("Feed_Log").query(f"Batch_ID == '{active_id}'"))
 
-    elif nav == "Mortality":
-        if status == "Pre-Arrival": st.warning("Locked until chicks arrive.")
-        else:
-            if status == "Active":
-                with st.form("mort_form", clear_on_submit=True):
-                    m_count = st.number_input("Birds Dead", min_value=1)
-                    if st.form_submit_button("Save"):
-                        append_row("Mortality_Log", [str(date.today()), m_count, active_id])
-            st.dataframe(get_df("Mortality_Log").query(f"Batch_ID == '{active_id}'"))
+        # Mortality Logic
+        elif nav == "Mortality":
+            if status == "Pre-Arrival": st.warning("Locked. Please confirm chick arrival on Dashboard.")
+            else:
+                if status == "Active":
+                    with st.form("mort_form", clear_on_submit=True):
+                        m_count = st.number_input("Birds Lost Today", min_value=1)
+                        if st.form_submit_button("Save Mortality"):
+                            append_row("Mortality_Log", [str(date.today()), m_count, active_id])
+                st.dataframe(get_df("Mortality_Log").query(f"Batch_ID == '{active_id}'"))
 
-    elif nav == "Expenses":
-        if status != "Finalized":
-            with st.form("exp_form", clear_on_submit=True):
-                cat = st.selectbox("Category", ["Medicine", "Person A", "Person B"])
-                item = st.text_input("Item Name")
-                amt = st.number_input("Price", min_value=0.0)
-                if st.form_submit_button("Add Expense"):
-                    append_row("Expenses_Log", [str(date.today()), cat, item, "", amt, active_id])
-        st.dataframe(get_df("Expenses_Log").query(f"Batch_ID == '{active_id}'"))
+        # Expenses Logic (Always open for Pre-Arrival and Active)
+        elif nav == "Expenses":
+            if status != "Finalized":
+                with st.form("exp_form", clear_on_submit=True):
+                    cat = st.selectbox("Category", ["Medicine", "Person A", "Person B"])
+                    item = st.text_input("Item/Service Name")
+                    amt = st.number_input("Amount Paid", min_value=0.0)
+                    if st.form_submit_button("Save Expense"):
+                        append_row("Expenses_Log", [str(date.today()), cat, item, "", amt, active_id])
+            st.dataframe(get_df("Expenses_Log").query(f"Batch_ID == '{active_id}'"))
 
-# --- 5. SALES TAB (THE CONTAINER GRID) ---
+# --- 6. SALES TAB (CONTAINER GRID) ---
 elif nav == "Sales":
-    st.title("💰 Sales Grid")
+    st.title("💰 Sales Entry")
     if status != "Active" and status != "Finalized":
-        st.warning("Sales only available when Batch is Active.")
+        st.warning("Sales tab unlocks only after chicks arrive.")
     else:
         if status == "Active":
-            with st.expander("New Sales Entry", expanded=True):
-                p_kg = st.number_input("Price per KG")
-                trips = st.number_input("Number of Trips", min_value=1, step=1)
-                all_rows = []
+            with st.expander("Record Today's Sale", expanded=True):
+                p_kg = st.number_input("Daily Price per KG")
+                trips = st.number_input("How many trips today?", min_value=1, step=1)
+                
+                all_sales_data = []
                 for t in range(int(trips)):
-                    st.subheader(f"Trip {t+1}")
-                    conts = st.number_input(f"Containers for Trip {t+1}", min_value=1, step=1, key=f"t{t}")
-                    for c in range(int(conts)):
+                    st.markdown(f"**Trip {t+1}**")
+                    containers = st.number_input(f"Number of Containers (Trip {t+1})", min_value=1, step=1, key=f"t{t}")
+                    for c in range(int(containers)):
                         col1, col2 = st.columns(2)
-                        w = col1.number_input(f"Weight (KG) C{c+1}", key=f"w{t}{c}")
-                        b = col2.number_input(f"Birds C{c+1}", value=10, key=f"b{t}{c}")
-                        all_rows.append([str(date.today()), t+1, c+1, b, w, p_kg, w*p_kg, active_id])
-                if st.button("Save All Sales"):
-                    for r in all_rows: append_row("Sales_Log", r)
-                    st.success("Saved!"); st.rerun()
+                        weight = col1.number_input(f"Weight KG (C{c+1})", key=f"w{t}{c}")
+                        birds = col2.number_input(f"Bird Count (C{c+1})", value=10, key=f"b{t}{c}")
+                        all_sales_data.append([str(date.today()), t+1, c+1, birds, weight, p_kg, weight*p_kg, active_id])
+                
+                if st.button("Upload All Trip Data to Spreadsheet"):
+                    for row in all_sales_data:
+                        append_row("Sales_Log", row)
+                    st.success("Successfully uploaded!"); st.rerun()
+        
         st.dataframe(get_df("Sales_Log").query(f"Batch_ID == '{active_id}'"))
